@@ -1,13 +1,15 @@
-# RENTSETU RELATIONAL DATABASE ARCHITECTURE
+# RentSetu Entity-Relationship Diagram & Data Dictionary
 
 ## 1. Overview & Architectural Domains
 
-The RentSetu relational database schema is structured into 4 interconnected domains comprising 7 core tables:
+The RentSetu relational schema contains seven tables across four functional domains:
 
-1. **Identity & Access**: `users`, `tenant_profiles`
-2. **Property Portfolio**: `properties`, `units`
-3. **Lease & Rentals**: `leases`, `payments`
-4. **Maintenance & Service**: `maintenance_requests`
+1. **Identity & Access**: `User`, `TenantProfile`
+2. **Property Portfolio**: `Property`, `Unit`
+3. **Lease & Rentals**: `Lease`, `Payment`
+4. **Maintenance & Service**: `MaintenanceRequest`
+
+The SQL definition is maintained in [`03_schema.sql`](./03_schema.sql).
 
 ---
 
@@ -15,33 +17,29 @@ The RentSetu relational database schema is structured into 4 interconnected doma
 
 ```mermaid
 erDiagram
-    users ||--|| tenant_profiles : "has profile"
-    users ||--o{ properties : "owns / manages"
-    properties ||--o{ units : "contains"
-    units ||--o{ leases : "leases"
-    tenant_profiles ||--o{ leases : "leases"
-    leases ||--o{ payments : "has"
-    units ||--o{ maintenance_requests : "receives"
-    leases ||--o{ maintenance_requests : "may have"
-    tenant_profiles ||--o{ maintenance_requests : "files"
+    User ||--o| TenantProfile : "has profile"
+    User ||--o{ Property : "owns"
+    User o|--o{ Property : "manages"
+    Property ||--o{ Unit : "contains"
+    Unit ||--o{ Lease : "has lease history"
+    TenantProfile ||--o{ Lease : "holds"
+    Lease ||--o{ Payment : "has payments"
+    Unit ||--o{ MaintenanceRequest : "receives"
+    Lease o|--o{ MaintenanceRequest : "may be associated with"
+    TenantProfile ||--o{ MaintenanceRequest : "submits"
 
-    users {
+    User {
         string id PK
         string name
-        string email
+        string email UK
         string passwordHash
         Role role
         boolean isActive
+        timestamp createdAt
+        timestamp updatedAt
     }
 
-    tenant_profiles {
-        string id PK
-        string userId FK
-        string createdByLandlordId FK
-        string phone
-    }
-
-    properties {
+    Property {
         string id PK
         string ownerId FK
         string managerId FK
@@ -51,18 +49,35 @@ erDiagram
         string state
         string pincode
         string type
+        timestamp createdAt
+        timestamp updatedAt
     }
 
-    units {
+    Unit {
         string id PK
         string propertyId FK
         string unitNumber
         decimal rent
         int bedrooms
         UnitStatus status
+        timestamp createdAt
+        timestamp updatedAt
     }
 
-    leases {
+    TenantProfile {
+        string id PK
+        string userId FK, UK
+        string createdByLandlordId FK
+        string phone
+        string emergencyContactName
+        string emergencyContactPhone
+        string idProofType
+        string idProofNumber
+        timestamp createdAt
+        timestamp updatedAt
+    }
+
+    Lease {
         string id PK
         string unitId FK
         string tenantId FK
@@ -72,18 +87,23 @@ erDiagram
         decimal securityDeposit
         int dueDay
         LeaseStatus status
+        timestamp createdAt
+        timestamp updatedAt
     }
 
-    payments {
+    Payment {
         string id PK
         string leaseId FK
         date billingMonth
         decimal amount
         PaymentMethod method
         date paidOn
+        string notes
+        timestamp createdAt
+        timestamp updatedAt
     }
 
-    maintenance_requests {
+    MaintenanceRequest {
         string id PK
         string unitId FK
         string leaseId FK
@@ -92,117 +112,149 @@ erDiagram
         string description
         Priority priority
         MaintenanceStatus status
+        timestamp resolvedAt
+        timestamp createdAt
+        timestamp updatedAt
     }
 ```
+
+`Property.managerId` and `MaintenanceRequest.leaseId` are nullable. Mermaid ER syntax does not express nullability on individual attributes, so those optional columns are described here and in the data dictionary.
 
 ---
 
 ## 3. Domain Grouping
 
 ### Identity & Access
-- `users`
-- `tenant_profiles`
+- `User`
+- `TenantProfile`
 
 ### Property Portfolio
-- `properties`
-- `units`
+- `Property`
+- `Unit`
 
 ### Lease & Rentals
-- `leases`
-- `payments`
+- `Lease`
+- `Payment`
 
 ### Maintenance & Service
-- `maintenance_requests`
+- `MaintenanceRequest`
 
 ---
 
 ## 4. Detailed Data Dictionary
 
-### users
-| Column | Type | Constraints | Description |
-|---|---|---|---|
-| id | string | PK | Unique user identifier |
-| name | string | NOT NULL | Full name of the user |
-| email | string | UNIQUE, NOT NULL | Email address used for login |
-| passwordHash | string | NOT NULL | Hashed password for authentication |
-| role | Role | NOT NULL | User role such as landlord or tenant |
-| isActive | boolean | DEFAULT true | Whether the user account is active |
+All IDs are UUID-formatted strings generated by Prisma and stored as `TEXT` in PostgreSQL. All timestamps use `TIMESTAMP(3)`.
 
-### tenant_profiles
+### User
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| id | string | PK | Tenant profile identifier |
-| userId | string | FK -> users.id | Link to the user account |
-| createdByLandlordId | string | FK -> users.id | Landlord or manager who created the profile |
-| phone | string | NULL | Tenant contact number |
+| id | TEXT | PK | User identifier |
+| name | TEXT | NOT NULL | User's name |
+| email | TEXT | UNIQUE, NOT NULL | Login email |
+| passwordHash | TEXT | NOT NULL | Hashed password |
+| role | Role | NOT NULL, DEFAULT TENANT | LANDLORD, MANAGER, or TENANT |
+| isActive | BOOLEAN | NOT NULL, DEFAULT TRUE | Whether the account is active |
+| createdAt | TIMESTAMP(3) | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Creation time |
+| updatedAt | TIMESTAMP(3) | NOT NULL | Last update time, maintained by Prisma |
 
-### properties
+### Property
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| id | string | PK | Unique property identifier |
-| ownerId | string | FK -> users.id | Property owner |
-| managerId | string | FK -> users.id | Property manager assigned to this property |
-| name | string | NOT NULL | Property or building name |
-| address | string | NOT NULL | Street address |
-| city | string | NOT NULL | City |
-| state | string | NOT NULL | State |
-| pincode | string | NOT NULL | Postal code |
-| type | string | NOT NULL | Property category such as apartment or villa |
+| id | TEXT | PK | Property identifier |
+| ownerId | TEXT | FK -> User.id, NOT NULL | Property owner |
+| managerId | TEXT | FK -> User.id, NULL | Optional property manager |
+| name | TEXT | NOT NULL | Property name |
+| address | TEXT | NOT NULL | Street address |
+| city | TEXT | NOT NULL | City |
+| state | TEXT | NOT NULL | State |
+| pincode | TEXT | NOT NULL | Postal code |
+| type | TEXT | NOT NULL | Property type |
+| createdAt | TIMESTAMP(3) | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Creation time |
+| updatedAt | TIMESTAMP(3) | NOT NULL | Last update time, maintained by Prisma |
 
-### units
+### Unit
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| id | string | PK | Unit identifier |
-| propertyId | string | FK -> properties.id | Parent property |
-| unitNumber | string | NOT NULL | Unit number or suite name |
-| rent | decimal | NOT NULL | Monthly rent |
-| bedrooms | int | NOT NULL | Number of bedrooms |
-| status | UnitStatus | NOT NULL | Unit availability status |
+| id | TEXT | PK | Unit identifier |
+| propertyId | TEXT | FK -> Property.id, NOT NULL | Parent property |
+| unitNumber | TEXT | NOT NULL | Unit number |
+| rent | DECIMAL(12,2) | NOT NULL | Listed rent |
+| bedrooms | INTEGER | NOT NULL | Number of bedrooms |
+| status | UnitStatus | NOT NULL, DEFAULT VACANT | VACANT or OCCUPIED |
+| createdAt | TIMESTAMP(3) | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Creation time |
+| updatedAt | TIMESTAMP(3) | NOT NULL | Last update time, maintained by Prisma |
 
-### leases
-| Column | Type | Constraints | Description |
-|---|---|---|---|
-| id | string | PK | Lease identifier |
-| unitId | string | FK -> units.id | Rented unit |
-| tenantId | string | FK -> tenant_profiles.id | Tenant on this lease |
-| startDate | date | NOT NULL | Lease start date |
-| endDate | date | NOT NULL | Lease end date |
-| monthlyRent | decimal | NOT NULL | Monthly rent for the lease |
-| securityDeposit | decimal | NOT NULL | Security deposit charged |
-| dueDay | int | NOT NULL | Rent due day of the month |
-| status | LeaseStatus | NOT NULL | Lease state such as active or expired |
+Unique constraint: `(propertyId, unitNumber)`.
 
-### payments
+### TenantProfile
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| id | string | PK | Payment identifier |
-| leaseId | string | FK -> leases.id | Lease associated with the payment |
-| billingMonth | date | NOT NULL | The month for which payment is made |
-| amount | decimal | NOT NULL | Amount paid |
-| method | PaymentMethod | NOT NULL | Payment method such as UPI or bank transfer |
-| paidOn | date | NOT NULL | Payment date |
+| id | TEXT | PK | Tenant profile identifier |
+| userId | TEXT | FK -> User.id, UNIQUE, NOT NULL | User associated with this tenant profile |
+| createdByLandlordId | TEXT | FK -> User.id, NOT NULL | User who created the profile |
+| phone | TEXT | NOT NULL | Tenant phone number |
+| emergencyContactName | TEXT | NULL | Optional emergency contact name |
+| emergencyContactPhone | TEXT | NULL | Optional emergency contact phone |
+| idProofType | TEXT | NULL | Optional identification document type |
+| idProofNumber | TEXT | NULL | Optional identification document number |
+| createdAt | TIMESTAMP(3) | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Creation time |
+| updatedAt | TIMESTAMP(3) | NOT NULL | Last update time, maintained by Prisma |
 
-### maintenance_requests
+### Lease
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| id | string | PK | Maintenance request identifier |
-| unitId | string | FK -> units.id | Affected unit |
-| leaseId | string | FK -> leases.id | Related lease |
-| tenantId | string | FK -> tenant_profiles.id | Tenant who submitted the request |
-| title | string | NOT NULL | Short request title |
-| description | text | NOT NULL | Detailed issue description |
-| priority | Priority | NOT NULL | Request urgency |
-| status | MaintenanceStatus | NOT NULL | Current request stage |
+| id | TEXT | PK | Lease identifier |
+| unitId | TEXT | FK -> Unit.id, NOT NULL | Leased unit |
+| tenantId | TEXT | FK -> TenantProfile.id, NOT NULL | Tenant holding the lease |
+| startDate | DATE | NOT NULL | Lease start date |
+| endDate | DATE | NOT NULL | Lease end date |
+| monthlyRent | DECIMAL(12,2) | NOT NULL | Contracted monthly rent |
+| securityDeposit | DECIMAL(12,2) | NOT NULL | Security deposit |
+| dueDay | INTEGER | NOT NULL, CHECK 1-28 | Monthly rent due day |
+| status | LeaseStatus | NOT NULL, DEFAULT ACTIVE | ACTIVE, ENDED, or TERMINATED |
+| createdAt | TIMESTAMP(3) | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Creation time |
+| updatedAt | TIMESTAMP(3) | NOT NULL | Last update time, maintained by Prisma |
+
+Partial unique index: at most one ACTIVE lease per unit.
+
+### Payment
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| id | TEXT | PK | Payment identifier |
+| leaseId | TEXT | FK -> Lease.id, NOT NULL | Associated lease |
+| billingMonth | DATE | NOT NULL, CHECK day is 1 | First day of the billed month |
+| amount | DECIMAL(12,2) | NOT NULL | Amount paid |
+| method | PaymentMethod | NOT NULL | CASH, UPI, BANK_TRANSFER, CHEQUE, or CARD |
+| paidOn | DATE | NOT NULL | Payment date |
+| notes | TEXT | NULL | Optional payment notes |
+| createdAt | TIMESTAMP(3) | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Creation time |
+| updatedAt | TIMESTAMP(3) | NOT NULL | Last update time, maintained by Prisma |
+
+Unique constraint: `(leaseId, billingMonth)`.
+
+### MaintenanceRequest
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| id | TEXT | PK | Request identifier |
+| unitId | TEXT | FK -> Unit.id, NOT NULL | Affected unit |
+| leaseId | TEXT | FK -> Lease.id, NULL | Optional related lease |
+| tenantId | TEXT | FK -> TenantProfile.id, NOT NULL | Tenant submitting the request |
+| title | TEXT | NOT NULL | Short issue title |
+| description | TEXT | NOT NULL | Issue details |
+| priority | Priority | NOT NULL, DEFAULT MEDIUM | LOW, MEDIUM, HIGH, or URGENT |
+| status | MaintenanceStatus | NOT NULL, DEFAULT OPEN | OPEN, IN_PROGRESS, RESOLVED, or CLOSED |
+| resolvedAt | TIMESTAMP(3) | NULL | Resolution time, if resolved |
+| createdAt | TIMESTAMP(3) | NOT NULL, DEFAULT CURRENT_TIMESTAMP | Creation time |
+| updatedAt | TIMESTAMP(3) | NOT NULL | Last update time, maintained by Prisma |
 
 ---
 
 ## 5. Relationship Notes
 
-- A user can own or manage many properties.
-- Each property contains multiple units.
-- A unit can be linked to multiple leases over time.
-- A tenant profile can hold multiple leases.
-- A lease may have multiple payment records.
-- A unit or lease can generate multiple maintenance requests.
+- Each tenant profile belongs to one user; a user may have no tenant profile or one tenant profile.
+- A user may own many properties; a property has one owner and may have one manager.
+- Each property contains units, and each unit may have lease records over time.
+- Each lease belongs to one tenant profile and may have multiple payments.
+- A maintenance request belongs to a unit and tenant profile; it may optionally be linked to a lease.
 
-This structure supports the complete rent lifecycle: onboarding, property management, lease assignment, rent tracking, and maintenance resolution.
+The schema's foreign keys use `ON DELETE RESTRICT` and `ON UPDATE CASCADE`.
