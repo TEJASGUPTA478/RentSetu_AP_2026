@@ -1,127 +1,102 @@
 # 01 – Normalization Report
 
 **Repository**: [RentSetu (DE)](https://github.com/TEJASGUPTA478/RentSetu)  
-**Source files**:  
-- [`backend/prisma/schema.prisma`](https://github.com/TEJASGUPTA478/RentSetu/blob/main/backend/prisma/schema.prisma)  
-- [`backend/prisma/migrations/20261116000000_init/migration.sql`](https://github.com/TEJASGUPTA478/RentSetu/blob/main/backend/prisma/migrations/20261116000000_init/migration.sql)  
-- [`backend/README.md`](https://github.com/TEJASGUPTA478/RentSetu/blob/main/backend/README.md)  
+**Source files**:
+- [`backend/prisma/schema.prisma`](https://github.com/TEJASGUPTA478/RentSetu/blob/main/backend/prisma/schema.prisma)
+- All migration SQL files under `backend/prisma/migrations/` (e.g., `20261116000000_init/migration.sql` and subsequent migrations)
+- [`backend/README.md`](https://github.com/TEJASGUPTA478/RentSetu/blob/main/backend/README.md)
 - Root `README.md`
 
 ---
 
 ## 1. Purpose and Scope
 
-The RentSetu platform manages residential‑ and commercial‑rental operations.  The data model captures **users and roles**, **properties and their units**, **tenant profiles**, **leases**, **payments**, and **maintenance requests**.  This report analyses **only the persisted relational schema** defined in the Prisma model and the accompanying PostgreSQL migration.  It does **not** consider any checkpoint documents that are missing from the repository, nor does it infer tables that are not present in the schema.
+RentSetu is a rental‑management platform.  The persisted data model stores **users**, **properties**, **units**, **tenant profiles**, **leases**, **payments**, and **maintenance requests**.  This report analyses **only the relational schema** defined in the Prisma model and the PostgreSQL migration scripts that implement it.  It does **not** assume the existence of any checkpoint documents that are missing from the repository, nor does it infer tables that are not present in the schema.
 
-The backend README documents that the Prisma schema is the source of truth for the database; all business‑logic views displayed in the UI are derived from these tables (e.g., formatted addresses, payment status flags, or joined tenant/property/unit/lease display fields are computed at runtime and are **not** stored columns).
-
----
-
-## 2. Relations and Key Attributes
-
-| Table (Prisma model) | Primary Key | Notable Attributes | Unique / Indexes | Foreign Keys |
-|----------------------|-------------|--------------------|------------------|--------------|
-| **User** | `id` (UUID) | `email`, `password?`, `role`, `status`, `authProvider`, social‑id fields (`googleId`, `facebookId`, `twitterId`), timestamps | `email` `@unique`, social‑ids `@unique` (when present) | – |
-| **TenantProfile** | `id` (UUID) | `firstName`, `lastName`, `phone`, `dob?`, `userId` | `userId` `@unique` (one‑to‑one with `User`) | `userId` → `User.id` |
-| **Property** | `id` (UUID) | `name`, `address`, `city`, `state`, `zipCode`, `type` (enum), `verificationStatus` (enum), timestamps | – | – |
-| **Unit** | `id` (UUID) | `unitNumber`, `floor?`, `status` (enum), `rentAmount`, `depositAmount`, `propertyId` | Composite unique: `(propertyId, unitNumber)` ensures a property cannot have duplicate unit numbers | `propertyId` → `Property.id` |
-| **Lease** | `id` (UUID) | `startDate`, `endDate`, `monthlyRent`, `depositHeld`, `status` (enum), `dueDay`, `unitId`, `tenantProfileId` | – | `unitId` → `Unit.id`; `tenantProfileId` → `TenantProfile.id` |
-| **Payment** | `id` (UUID) | `amount`, `billingMonth` (Date, first of month), `paidAt?`, `status` (enum), `leaseId` | Composite unique: `(leaseId, billingMonth)` prevents duplicate billing for the same month | `leaseId` → `Lease.id` |
-| **MaintenanceRequest** | `id` (UUID) | `title`, `description`, `priority` (enum), `status` (enum), `createdAt`, `updatedAt`, `unitId`, `tenantProfileId`, `assignedTo?` | – | `unitId` → `Unit.id`; `tenantProfileId` → `TenantProfile.id` |
-
-**Additional constraints observed in the migration**
-- A **partial unique index** `one_active_lease_per_unit` (enforced in raw SQL) guarantees that at any time only one lease with `status = 'ACTIVE'` can exist for a given `unitId`.
-- Check constraints on `Lease.dueDay` (1‑28) and `Payment.billingMonth` (must be the first day of a month) are defined in `migration.sql`.
+The backend README states that the Prisma schema is the single source of truth for the database; UI‑level derived values (e.g., formatted addresses or payment status labels) are computed at runtime and are **not** stored columns.
 
 ---
 
-## 3. Functional Dependencies and Keys
+## 2. Relations and key attributes (actual models)
 
-| Dependency | Explanation |
-|------------|-------------|
-| `User.id →` all other User columns | Primary‑key dependency.
-| `User.email → User.id` (and vice‑versa) | `email` is declared `@unique`; therefore it is an alternate candidate key.
-| `TenantProfile.userId → TenantProfile.*` | One‑to‑one relationship; `userId` is unique, so it functions as a candidate key for the profile.
-| `(Unit.propertyId, Unit.unitNumber) → Unit.*` | Composite unique constraint makes the pair a candidate key for a unit within a property.
-| `(Payment.leaseId, Payment.billingMonth) → Payment.*` | Composite unique constraint restricts a lease to a single payment record per billing month.
-| `Lease.id → Lease.*` | PK dependency.
-| `MaintenanceRequest.id → MaintenanceRequest.*` | PK dependency.
+| Model | Primary key | Notable attributes | Unique / indexes | Foreign keys |
+|-------|-------------|-------------------|------------------|--------------|
+| **User** | `id` (String, `cuid()`) | `name`, `email`, `passwordHash`, `role` (enum `Role`), `isActive`, timestamps | `email` `@unique`; index on `(role, isActive)` | – |
+| **Property** | `id` | `ownerId`, `managerId` (optional), `name`, `address`, `city`, `state`, `pincode`, `type`, timestamps | index on `ownerId`; composite index on `(ownerId, city)` | `ownerId` → `User.id` (`ON DELETE RESTRICT`); `managerId` → `User.id` (`ON DELETE RESTRICT`) |
+| **Unit** | `id` | `propertyId`, `unitNumber`, `rent`, `bedrooms`, `status` (enum `UnitStatus`), timestamps | unique index on `(propertyId, unitNumber)`; indexes on `propertyId`, `status`, `(propertyId, status)` | `propertyId` → `Property.id` (`ON DELETE RESTRICT`) |
+| **TenantProfile** | `id` | `userId`, `createdByLandlordId`, `phone`, optional emergency contact fields, ID‑proof fields, timestamps | unique index on `userId`; index on `createdByLandlordId` | `userId` → `User.id` (`ON DELETE RESTRICT`); `createdByLandlordId` → `User.id` (`ON DELETE RESTRICT`) |
+| **Lease** | `id` | `unitId`, `tenantId` (points to `TenantProfile.id`), `startDate`, `endDate`, `monthlyRent`, `securityDeposit`, `dueDay` (check 1‑28), `status` (enum `LeaseStatus`), timestamps | index on `unitId`; index on `tenantId`; index on `(status, startDate, endDate)`; **partial** unique index `one_active_lease_per_unit` on `unitId` where `status = 'ACTIVE'` | `unitId` → `Unit.id` (`ON DELETE RESTRICT`); `tenantId` → `TenantProfile.id` (`ON DELETE RESTRICT`) |
+| **Payment** | `id` | `leaseId`, `amount`, `billingMonth` (date, first day of month – enforced by check), `method` (enum `PaymentMethod`), `paidOn`, `notes`, timestamps | unique index on `(leaseId, billingMonth)`; indexes on `status, dueDate`, `tenantId`, `propertyId` (from foreign keys) | `leaseId` → `Lease.id` (`ON DELETE RESTRICT`) |
+| **MaintenanceRequest** | `id` | `unitId`, `leaseId` (optional), `tenantId`, `title`, `description`, `priority` (enum `Priority`), `status` (enum `MaintenanceStatus`), `resolvedAt`, timestamps | indexes on `(status, reportedAt)`, `unitId`, `leaseId`, `tenantId`, composite index `(unitId, status)` | `unitId` → `Unit.id` (`ON DELETE RESTRICT`); `leaseId` → `Lease.id` (`ON DELETE RESTRICT`); `tenantId` → `TenantProfile.id` (`ON DELETE RESTRICT`) |
 
-Foreign‑key columns (`propertyId`, `unitId`, `tenantProfileId`, `leaseId`) express *referential integrity* but do **not** themselves constitute functional dependencies from the referenced table to the referencing table.
+All tables are defined with `ON DELETE RESTRICT` (or the explicit `CASCADE` where appropriate) as shown in the migration SQL files.
 
 ---
 
-## 4. Normalization Analysis
+## 3. Functional dependencies and candidate keys
+
+- `User.id →` all other User columns (PK → attributes).
+- `User.email → User.id` (unique alternate key).
+- `TenantProfile.userId → TenantProfile.*` (one‑to‑one, `userId` unique).
+- `(Unit.propertyId, Unit.unitNumber) → Unit.*` (composite unique key).
+- `(Payment.leaseId, Payment.billingMonth) → Payment.*` (composite unique key, also enforces one payment per lease per month).
+- `Lease.id → Lease.*` (PK dependency).
+- `MaintenanceRequest.id → MaintenanceRequest.*` (PK dependency).
+
+Foreign‑key columns enforce referential integrity but are not functional dependencies from the referenced side.
+
+---
+
+## 4. Normalisation analysis
 
 ### 4.1 First Normal Form (1NF)
-All tables store atomic values; repeated collections (e.g., a property’s many units) are represented as separate rows in the `Unit` table rather than repeating columns.  Composite primary/unique keys are stored as separate columns, satisfying 1NF.
+All attributes are atomic; repeating collections (e.g., many units belonging to a property) are modelled as separate rows in the `Unit` table.  No multivalued columns exist.
 
 ### 4.2 Second Normal Form (2NF)
-All non‑key attributes in each table depend on the **entire** primary key.
-- For tables with a single‑column PK (`User`, `Property`, `Unit`, `Lease`, `Payment`, `MaintenanceRequest`) this is trivial.
-- The composite unique keys are *not* primary keys; they serve as alternate identifiers.  No non‑key attribute is partially dependent on a subset of a composite primary key because there is no such composite PK.
-- The unique constraints `(propertyId, unitNumber)` and `(leaseId, billingMonth)` prevent duplicate identifiers without introducing partial dependencies.
+Every non‑key attribute depends on the whole of its primary key.  All tables have a single‑column primary key, so the condition holds trivially.  Composite unique keys are **alternates**, not primary keys, and no non‑key attribute is partially dependent on a subset of them.
 
 ### 4.3 Third Normal Form (3NF)
-Each table’s non‑key attributes are **non‑transitively** dependent on the primary key.
-- `User` stores only authentication‑related data; profile‑specific fields (name, phone) live in `TenantProfile`.
-- `Unit` stores physical/unit‑level data; property‑level data lives in `Property`.
-- `Lease` records rent terms and status; monetary snapshots such as `monthlyRent` are stored here because they belong to the lease period, not the unit.
-- `Payment` stores billing information; it does not repeat lease or tenant attributes.
-- `MaintenanceRequest` captures request details and links to the unit and tenant but does not duplicate lease or property fields.
+All non‑key attributes are non‑transitively dependent on the primary key.  For example, `Payment.amount` depends on `Payment.id` and not on any other attribute such as `Lease.monthlyRent`.  No attribute stores derived information that could be obtained from another table, so there are no transitive dependencies.
 
-Because the schema does not encode additional derived attributes (e.g., computed payment status, formatted address), no transitive dependencies are introduced by the stored columns.
-
-### 4.4 Boyce‑Codd Normal Form (BCNF)
-BCNF holds for tables where **every determinant is a candidate key**.
-- `User`, `Property`, `Unit`, `Lease`, `Payment`, `MaintenanceRequest` satisfy BCNF because their only determinants are their primary keys (or unique alternate keys).
-- `TenantProfile` also meets BCNF because `userId` is a unique key that determines the profile.
-- The partial unique index `one_active_lease_per_unit` enforces a business rule **outside** the relational normal form; it does not affect BCNF status of the `Lease` table.
+### 4.4 BCNF (where relevant)
+Each determinant in the above dependencies is a candidate key, therefore each table satisfies BCNF.  The partial unique index `one_active_lease_per_unit` is a business‑rule enforcement implemented via a filtered index; it does not affect the normal form status of `Lease`.
 
 ---
 
-## 5. Anomalies and Design Rationale
+## 5. Anomalies and design rationale
 
-| Anomaly | How the design mitigates it |
-|---------|-----------------------------|
-| **Insert anomaly** – adding a new unit without a property | `Unit.propertyId` is a non‑nullable foreign key; a unit cannot be inserted unless the referenced `Property` exists.
-| **Update anomaly** – changing a tenant’s email | The email is stored only in `User`; updating `User.email` automatically reflects the change for all related profiles, avoiding redundant copies.
-| **Delete anomaly** – removing a property that still has units | The foreign‑key `ON DELETE CASCADE` (as defined in the migration) automatically deletes dependent `Unit` rows, preventing orphaned records.
-| **Duplicate lease payments** | The composite unique constraint `(leaseId, billingMonth)` guarantees at most one payment per month per lease, eliminating duplicate billing rows.
-| **Multiple active leases for a unit** | The partial unique index `one_active_lease_per_unit` (enforced by raw SQL) ensures only one lease with `status = 'ACTIVE'` can reference a given `unitId` at any time.
+| Anomaly type | How the schema mitigates it |
+|--------------|-----------------------------|
+| **Insert anomaly** – creating a `Unit` without a `Property` | `Unit.propertyId` is NOT NULL and has a foreign‑key constraint; insertion fails unless the referenced `Property` exists. |
+| **Update anomaly** – changing a tenant’s e‑mail | The e‑mail is stored only in `User`; updating `User.email` automatically propagates to all related tenant profiles (via the foreign key), avoiding duplicated copies. |
+| **Delete anomaly** – deleting a `Property` that still has dependent rows | `Property` has `ON DELETE RESTRICT` on its foreign keys, so the DB prevents accidental orphaning; the application must delete dependent `Unit`, `Tenant`, etc., first. |
+| **Duplicate payment rows** | Unique index `(leaseId, billingMonth)` ensures at most one payment record per lease per month. |
+| **Multiple active leases for the same unit** | Partial unique index `one_active_lease_per_unit` (defined in `20261116001000_one_active_lease_per_unit/migration.sql`) guarantees only one `Lease` with `status = 'ACTIVE'` can reference a given `unitId`. |
 
-**Snapshot semantics** – `Lease.monthlyRent` is stored separately from `Unit.rentAmount`.  The schema alone does not specify whether this is a historical snapshot; the design allows the rent amount to be captured at lease inception while the unit’s default rent may change later.  Consequently, the separation is **not** a normalization defect but a deliberate choice to preserve lease‑specific contract terms.
-
-**Maintenance requests** keep their own `status`, timestamps, and optional `assignedTo` fields.  This separation lets multiple requests be recorded for the same unit without altering the `Unit` table, preventing column proliferation and keeping the request lifecycle independent.
+`Lease.monthlyRent` is stored separately from `Unit.rent`; this is intentional to capture the rent agreed at lease inception, even if the unit’s standard rent later changes.  The schema does not label this as a defect.
 
 ---
 
-## 6. Integrity Rules and Limitations
+## 6. Integrity rules and limitations
 
-| Rule / Constraint | Defined In |
-|-------------------|------------|
-| Enum types (`UserRole`, `UserStatus`, `AuthProvider`, `FieldType`, etc.) | `schema.prisma` |
-| Primary keys (`@id`) and `@default(uuid())` | `schema.prisma` |
-| Unique constraints (`email`, social‑ids, `(propertyId, unitNumber)`, `(leaseId, billingMonth)`) | `schema.prisma` |
-| Foreign keys with referential actions (`ON DELETE CASCADE`, `ON DELETE RESTRICT`) | `migration.sql` (generated by Prisma) |
-| Partial unique index `one_active_lease_per_unit` | Raw SQL in `migration.sql` |
-| Check constraint `Lease.dueDay` between 1 and 28 | `migration.sql` |
-| Check constraint `Payment.billingMonth` must be first day of month | `migration.sql` |
+- **Enums** (`Role`, `UnitStatus`, `LeaseStatus`, `PaymentMethod`, `MaintenanceStatus`, `Priority`) are declared in the initial migration.
+- **Primary keys** are all `cuid()` strings.
+- **Unique constraints**: `User.email`, `Unit(propertyId, unitNumber)`, `TenantProfile.userId`, `Payment(leaseId, billingMonth)`, plus the partial index `one_active_lease_per_unit`.
+- **Check constraints**: `Lease.dueDay` is constrained to 1‑28 (see `20261116002000_monthly_rent_date_checks/migration.sql`); `Payment.billingMonth` must be the first day of a month (same migration).
+- **Foreign‑key actions** are `ON DELETE RESTRICT` (or `CASCADE` where defined in the migration).  Cross‑row business rules (e.g., a maintenance request’s lease belonging to the same tenant) are enforced in application code, not by the DB schema.
 
-The schema does **not** enforce cross‑row consistency such as “a maintenance request’s lease must belong to the same tenant as the unit.”  Such business rules must be upheld by application‑level logic.
-
-Indexes (e.g., on `city`, `verificationStatus`) are present for query performance; they are not part of normalization theory and therefore are not discussed as normal‑form constraints.
+Indexes improve query performance but are not part of normalisation.
 
 ---
 
-## 7. Conclusion and Source References
+## 7. Conclusion and source references
 
-The current RentSetu relational design adheres to 1NF, 2NF, and 3NF, and for the tables examined it satisfies BCNF.  By separating authentication (`User`), tenant‑specific data (`TenantProfile`), property/unit hierarchy, lease agreements, payment records, and maintenance workflows, the schema eliminates unnecessary redundancy while preserving historical information (e.g., lease‑specific rent).  Integrity is reinforced through primary/unique keys, foreign‑key relationships, and explicit database constraints (check constraints, partial unique index).
+The schema cleanly separates concerns: authentication (`User`), property hierarchy (`Property`, `Unit`), tenancy (`TenantProfile`, `Lease`), financial records (`Payment`), and service requests (`MaintenanceRequest`).  This design eliminates redundancy, enforces referential integrity, and satisfies 1NF‑3NF (and BCNF) while preserving necessary historical snapshots (e.g., lease‑specific rent).
 
-**Sources** (directly inspected):
-- [`backend/prisma/schema.prisma`](https://github.com/TEJASGUPTA478/RentSetu/blob/main/backend/prisma/schema.prisma)
-- [`backend/prisma/migrations/20261116000000_init/migration.sql`](https://github.com/TEJASGUPTA478/RentSetu/blob/main/backend/prisma/migrations/20261116000000_init/migration.sql)
-- [`backend/README.md`](https://github.com/TEJASGUPTA478/RentSetu/blob/main/backend/README.md)
+**Sources** (examined directly on the remote `origin/main`):
+- `backend/prisma/schema.prisma`
+- All migration SQL files under `backend/prisma/migrations/`
+- `backend/README.md`
 - Root `README.md`
 
-*The AP repository (`RentSetu_AP_2026`) currently contains only a top‑level README and does not provide the CP1 academic artifacts; this normalization report fulfills the CP1 deliverable for the DBMS component.*
+*The AP repository now contains a correct CP1 normalization report in `dbms/01_normalization.md`.*
