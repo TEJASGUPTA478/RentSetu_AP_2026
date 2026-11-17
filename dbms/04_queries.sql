@@ -632,3 +632,692 @@ INSERT INTO "User" (
     $1, TRIM($2), LOWER(TRIM($3)), $4, 'TENANT', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 )
 RETURNING *;
+
+-- 4.7 Create tenant profile
+-- WRITE
+INSERT INTO "TenantProfile" (
+    "id",
+    "userId",
+    "createdByLandlordId",
+    "phone",
+    "emergencyContactName",
+    "emergencyContactPhone",
+    "idProofType",
+    "idProofNumber",
+    "createdAt",
+    "updatedAt"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+)
+RETURNING *;
+
+-- 4.8 Update user name for tenant
+-- WRITE
+UPDATE "User"
+SET 
+    "name" = TRIM($2),
+    "updatedAt" = CURRENT_TIMESTAMP
+WHERE "id" = $1;
+
+-- 4.9 Update tenant profile fields
+-- WRITE
+UPDATE "TenantProfile"
+SET 
+    "phone" = COALESCE($2, "phone"),
+    "emergencyContactName" = COALESCE($3, "emergencyContactName"),
+    "emergencyContactPhone" = COALESCE($4, "emergencyContactPhone"),
+    "idProofType" = COALESCE($5, "idProofType"),
+    "idProofNumber" = COALESCE($6, "idProofNumber"),
+    "updatedAt" = CURRENT_TIMESTAMP
+WHERE "id" = $1
+RETURNING *;
+
+-- 4.10 Check tenant active leases and maintenance history before deletion
+-- READ
+SELECT 
+    tp."id",
+    COUNT(CASE WHEN l."status" = 'ACTIVE' THEN 1 END)::INT AS "activeLeasesCount",
+    COUNT(l."id")::INT AS "totalLeasesCount",
+    COUNT(m."id")::INT AS "maintenanceCount"
+FROM "TenantProfile" tp
+LEFT JOIN "Lease" l ON l."tenantId" = tp."id"
+LEFT JOIN "MaintenanceRequest" m ON m."tenantId" = tp."id"
+WHERE tp."id" = $1
+GROUP BY tp."id";
+
+-- 4.11 Delete tenant profile
+-- WRITE
+DELETE FROM "TenantProfile"
+WHERE "id" = $1;
+
+-- 4.12 Delete tenant user record
+-- WRITE
+DELETE FROM "User"
+WHERE "id" = $1;
+
+
+-- ============================================================================
+-- SECTION 5: LEASE MANAGEMENT
+-- ============================================================================
+
+-- 5.1 List leases with unit, property, tenant profile, and user details
+-- READ
+SELECT 
+    l."id" AS "leaseId",
+    l."unitId",
+    l."tenantId",
+    l."startDate",
+    l."endDate",
+    l."monthlyRent",
+    l."securityDeposit",
+    l."dueDay",
+    l."status" AS "leaseStatus",
+    l."createdAt",
+    l."updatedAt",
+    u."unitNumber",
+    u."rent" AS "unitRent",
+    u."bedrooms",
+    p."id" AS "propertyId",
+    p."name" AS "propertyName",
+    p."address" AS "propertyAddress",
+    p."city" AS "propertyCity",
+    tp."phone" AS "tenantPhone",
+    tu."id" AS "tenantUserId",
+    tu."name" AS "tenantName",
+    tu."email" AS "tenantEmail"
+FROM "Lease" l
+INNER JOIN "Unit" u ON u."id" = l."unitId"
+INNER JOIN "Property" p ON p."id" = u."propertyId"
+INNER JOIN "TenantProfile" tp ON tp."id" = l."tenantId"
+INNER JOIN "User" tu ON tu."id" = tp."userId"
+WHERE 
+    (
+        ($1 = 'LANDLORD' AND p."ownerId" = $2)
+        OR ($1 = 'MANAGER' AND p."managerId" = $2)
+        OR ($1 = 'TENANT' AND tu."id" = $2)
+    )
+    AND ($3::TEXT IS NULL OR p."id" = $3)
+    AND ($4::TEXT IS NULL OR u."id" = $4)
+    AND ($5::TEXT IS NULL OR tp."id" = $5)
+    AND ($6::"LeaseStatus" IS NULL OR l."status" = $6)
+ORDER BY l."createdAt" DESC
+LIMIT $7 OFFSET $8;
+
+-- 5.2 Count leases matching filter for pagination
+-- READ
+SELECT COUNT(l."id")::INT AS "total"
+FROM "Lease" l
+INNER JOIN "Unit" u ON u."id" = l."unitId"
+INNER JOIN "Property" p ON p."id" = u."propertyId"
+INNER JOIN "TenantProfile" tp ON tp."id" = l."tenantId"
+INNER JOIN "User" tu ON tu."id" = tp."userId"
+WHERE 
+    (
+        ($1 = 'LANDLORD' AND p."ownerId" = $2)
+        OR ($1 = 'MANAGER' AND p."managerId" = $2)
+        OR ($1 = 'TENANT' AND tu."id" = $2)
+    )
+    AND ($3::TEXT IS NULL OR p."id" = $3)
+    AND ($4::TEXT IS NULL OR u."id" = $4)
+    AND ($5::TEXT IS NULL OR tp."id" = $5)
+    AND ($6::"LeaseStatus" IS NULL OR l."status" = $6);
+
+-- 5.3 Get lease by ID with unit, property, tenant user, and payment records
+-- READ
+SELECT 
+    l."id" AS "leaseId",
+    l."startDate",
+    l."endDate",
+    l."monthlyRent",
+    l."securityDeposit",
+    l."dueDay",
+    l."status" AS "leaseStatus",
+    l."createdAt",
+    l."updatedAt",
+    u."id" AS "unitId",
+    u."unitNumber",
+    p."id" AS "propertyId",
+    p."name" AS "propertyName",
+    p."address" AS "propertyAddress",
+    p."city" AS "propertyCity",
+    p."state" AS "propertyState",
+    p."pincode" AS "propertyPincode",
+    p."type" AS "propertyType",
+    p."ownerId",
+    p."managerId",
+    tp."id" AS "tenantProfileId",
+    tp."phone" AS "tenantPhone",
+    tu."id" AS "tenantUserId",
+    tu."name" AS "tenantName",
+    tu."email" AS "tenantEmail",
+    pm."id" AS "paymentId",
+    pm."billingMonth",
+    pm."amount" AS "paymentAmount",
+    pm."method" AS "paymentMethod",
+    pm."paidOn",
+    pm."notes"
+FROM "Lease" l
+INNER JOIN "Unit" u ON u."id" = l."unitId"
+INNER JOIN "Property" p ON p."id" = u."propertyId"
+INNER JOIN "TenantProfile" tp ON tp."id" = l."tenantId"
+INNER JOIN "User" tu ON tu."id" = tp."userId"
+LEFT JOIN "Payment" pm ON pm."leaseId" = l."id"
+WHERE l."id" = $1
+ORDER BY pm."paidOn" DESC;
+
+-- 5.4 Check if an active lease already exists on a unit
+-- READ
+SELECT "id", "startDate", "endDate"
+FROM "Lease"
+WHERE "unitId" = $1 AND "status" = 'ACTIVE'
+LIMIT 1;
+
+-- 5.5 Create a new lease
+-- WRITE
+INSERT INTO "Lease" (
+    "id",
+    "unitId",
+    "tenantId",
+    "startDate",
+    "endDate",
+    "monthlyRent",
+    "securityDeposit",
+    "dueDay",
+    "status",
+    "createdAt",
+    "updatedAt"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, 'ACTIVE'), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+)
+RETURNING *;
+
+-- 5.6 Update unit status when lease becomes active
+-- WRITE
+UPDATE "Unit"
+SET 
+    "status" = 'OCCUPIED',
+    "updatedAt" = CURRENT_TIMESTAMP
+WHERE "id" = $1;
+
+-- 5.7 Update lease details or status
+-- WRITE
+UPDATE "Lease"
+SET 
+    "startDate" = COALESCE($2, "startDate"),
+    "endDate" = COALESCE($3, "endDate"),
+    "monthlyRent" = COALESCE($4, "monthlyRent"),
+    "securityDeposit" = COALESCE($5, "securityDeposit"),
+    "dueDay" = COALESCE($6, "dueDay"),
+    "status" = COALESCE($7, "status"),
+    "updatedAt" = CURRENT_TIMESTAMP
+WHERE "id" = $1
+RETURNING *;
+
+-- 5.8 Check if other active leases remain for the unit when a lease is ended/terminated
+-- READ
+SELECT "id"
+FROM "Lease"
+WHERE "unitId" = $1 AND "status" = 'ACTIVE' AND "id" != $2
+LIMIT 1;
+
+-- 5.9 Reset unit status to VACANT when no active lease remains
+-- WRITE
+UPDATE "Unit"
+SET 
+    "status" = 'VACANT',
+    "updatedAt" = CURRENT_TIMESTAMP
+WHERE "id" = $1;
+
+-- 5.10 Check payment history on a lease before deletion
+-- READ
+SELECT 
+    l."id",
+    COUNT(pm."id")::INT AS "paymentCount"
+FROM "Lease" l
+LEFT JOIN "Payment" pm ON pm."leaseId" = l."id"
+WHERE l."id" = $1
+GROUP BY l."id";
+
+-- 5.11 Delete a lease
+-- WRITE
+DELETE FROM "Lease"
+WHERE "id" = $1;
+
+
+-- ============================================================================
+-- SECTION 6: RENT PAYMENTS
+-- ============================================================================
+
+-- 6.1 List rent payments with lease, unit, property, and tenant user details
+-- READ
+SELECT 
+    pm."id" AS "paymentId",
+    pm."billingMonth",
+    pm."amount",
+    pm."method",
+    pm."paidOn",
+    pm."notes",
+    pm."createdAt",
+    l."id" AS "leaseId",
+    l."dueDay",
+    l."monthlyRent",
+    u."id" AS "unitId",
+    u."unitNumber",
+    p."id" AS "propertyId",
+    p."name" AS "propertyName",
+    tu."id" AS "tenantUserId",
+    tu."name" AS "tenantName",
+    tu."email" AS "tenantEmail"
+FROM "Payment" pm
+INNER JOIN "Lease" l ON l."id" = pm."leaseId"
+INNER JOIN "Unit" u ON u."id" = l."unitId"
+INNER JOIN "Property" p ON p."id" = u."propertyId"
+INNER JOIN "TenantProfile" tp ON tp."id" = l."tenantId"
+INNER JOIN "User" tu ON tu."id" = tp."userId"
+WHERE 
+    (
+        ($1 = 'LANDLORD' AND p."ownerId" = $2)
+        OR ($1 = 'MANAGER' AND p."managerId" = $2)
+        OR ($1 = 'TENANT' AND tu."id" = $2)
+    )
+    AND ($3::TEXT IS NULL OR pm."leaseId" = $3)
+    AND ($4::DATE IS NULL OR pm."billingMonth" = $4)
+ORDER BY pm."paidOn" DESC, pm."createdAt" DESC
+LIMIT $5 OFFSET $6;
+
+-- 6.2 Get payment by ID with full lease, property, and tenant context
+-- READ
+SELECT 
+    pm."id" AS "paymentId",
+    pm."billingMonth",
+    pm."amount",
+    pm."method",
+    pm."paidOn",
+    pm."notes",
+    pm."createdAt",
+    l."id" AS "leaseId",
+    l."dueDay",
+    l."monthlyRent",
+    u."unitNumber",
+    p."id" AS "propertyId",
+    p."name" AS "propertyName",
+    p."ownerId",
+    p."managerId",
+    tu."id" AS "tenantUserId",
+    tu."name" AS "tenantName",
+    tu."email" AS "tenantEmail"
+FROM "Payment" pm
+INNER JOIN "Lease" l ON l."id" = pm."leaseId"
+INNER JOIN "Unit" u ON u."id" = l."unitId"
+INNER JOIN "Property" p ON p."id" = u."propertyId"
+INNER JOIN "TenantProfile" tp ON tp."id" = l."tenantId"
+INNER JOIN "User" tu ON tu."id" = tp."userId"
+WHERE pm."id" = $1;
+
+-- 6.3 Check if payment already exists for a lease and billing month (unique check)
+-- READ
+SELECT "id", "amount", "paidOn"
+FROM "Payment"
+WHERE "leaseId" = $1 AND "billingMonth" = $2;
+
+-- 6.4 Record a new rent payment
+-- WRITE
+INSERT INTO "Payment" (
+    "id",
+    "leaseId",
+    "billingMonth",
+    "amount",
+    "method",
+    "paidOn",
+    "notes",
+    "createdAt",
+    "updatedAt"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+)
+RETURNING *;
+
+-- 6.5 Update payment notes or payment method
+-- WRITE
+UPDATE "Payment"
+SET 
+    "notes" = COALESCE($2, "notes"),
+    "method" = COALESCE($3, "method"),
+    "amount" = COALESCE($4, "amount"),
+    "paidOn" = COALESCE($5, "paidOn"),
+    "updatedAt" = CURRENT_TIMESTAMP
+WHERE "id" = $1
+RETURNING *;
+
+-- 6.6 Delete / void a payment record
+-- WRITE
+DELETE FROM "Payment"
+WHERE "id" = $1;
+
+
+-- ============================================================================
+-- SECTION 7: MAINTENANCE REQUESTS
+-- ============================================================================
+
+-- 7.1 List maintenance requests with unit, property, and reporting tenant details
+-- READ
+SELECT 
+    m."id" AS "requestId",
+    m."title",
+    m."description",
+    m."priority",
+    m."status",
+    m."resolvedAt",
+    m."createdAt",
+    m."updatedAt",
+    u."id" AS "unitId",
+    u."unitNumber",
+    p."id" AS "propertyId",
+    p."name" AS "propertyName",
+    p."address" AS "propertyAddress",
+    tp."id" AS "tenantProfileId",
+    tu."id" AS "tenantUserId",
+    tu."name" AS "tenantName",
+    tu."email" AS "tenantEmail",
+    l."id" AS "leaseId"
+FROM "MaintenanceRequest" m
+INNER JOIN "Unit" u ON u."id" = m."unitId"
+INNER JOIN "Property" p ON p."id" = u."propertyId"
+INNER JOIN "TenantProfile" tp ON tp."id" = m."tenantId"
+INNER JOIN "User" tu ON tu."id" = tp."userId"
+LEFT JOIN "Lease" l ON l."id" = m."leaseId"
+WHERE 
+    (
+        ($1 = 'LANDLORD' AND p."ownerId" = $2)
+        OR ($1 = 'MANAGER' AND p."managerId" = $2)
+        OR ($1 = 'TENANT' AND tu."id" = $2)
+    )
+    AND ($3::"MaintenanceStatus" IS NULL OR m."status" = $3)
+    AND ($4::TEXT IS NULL OR p."id" = $4)
+    AND ($5::TEXT IS NULL OR u."id" = $5)
+ORDER BY 
+    CASE m."priority"
+        WHEN 'URGENT' THEN 1
+        WHEN 'HIGH' THEN 2
+        WHEN 'MEDIUM' THEN 3
+        WHEN 'LOW' THEN 4
+    END ASC,
+    m."createdAt" DESC
+LIMIT $6 OFFSET $7;
+
+-- 7.2 Get maintenance request by ID with complete details
+-- READ
+SELECT 
+    m."id" AS "requestId",
+    m."title",
+    m."description",
+    m."priority",
+    m."status",
+    m."resolvedAt",
+    m."createdAt",
+    m."updatedAt",
+    u."id" AS "unitId",
+    u."unitNumber",
+    p."id" AS "propertyId",
+    p."name" AS "propertyName",
+    p."ownerId",
+    p."managerId",
+    tp."id" AS "tenantProfileId",
+    tp."phone" AS "tenantPhone",
+    tu."id" AS "tenantUserId",
+    tu."name" AS "tenantName",
+    tu."email" AS "tenantEmail",
+    l."id" AS "leaseId"
+FROM "MaintenanceRequest" m
+INNER JOIN "Unit" u ON u."id" = m."unitId"
+INNER JOIN "Property" p ON p."id" = u."propertyId"
+INNER JOIN "TenantProfile" tp ON tp."id" = m."tenantId"
+INNER JOIN "User" tu ON tu."id" = tp."userId"
+LEFT JOIN "Lease" l ON l."id" = m."leaseId"
+WHERE m."id" = $1;
+
+-- 7.3 Auto-lookup tenant active lease for unit when creating maintenance request
+-- READ
+SELECT l."id" AS "leaseId"
+FROM "Lease" l
+WHERE l."tenantId" = $1 AND l."unitId" = $2 AND l."status" = 'ACTIVE'
+LIMIT 1;
+
+-- 7.4 Create a new maintenance request
+-- WRITE
+INSERT INTO "MaintenanceRequest" (
+    "id",
+    "unitId",
+    "leaseId",
+    "tenantId",
+    "title",
+    "description",
+    "priority",
+    "status",
+    "createdAt",
+    "updatedAt"
+) VALUES (
+    $1, $2, $3, $4, $5, $6, COALESCE($7, 'MEDIUM'), 'OPEN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+)
+RETURNING *;
+
+-- 7.5 Update maintenance request status and set resolution timestamp
+-- WRITE
+UPDATE "MaintenanceRequest"
+SET 
+    "status" = $2,
+    "resolvedAt" = CASE WHEN $2 IN ('RESOLVED', 'CLOSED') THEN CURRENT_TIMESTAMP ELSE NULL END,
+    "updatedAt" = CURRENT_TIMESTAMP
+WHERE "id" = $1
+RETURNING *;
+
+-- 7.6 Delete maintenance request
+-- WRITE
+DELETE FROM "MaintenanceRequest"
+WHERE "id" = $1;
+
+
+-- ============================================================================
+-- SECTION 8: LANDLORD / MANAGER DASHBOARD ANALYTICS
+-- ============================================================================
+
+-- 8.1 Portfolio summary: property count, total units, occupied units, vacant units
+-- READ
+SELECT 
+    COUNT(DISTINCT p."id")::INT AS "totalProperties",
+    COUNT(u."id")::INT AS "totalUnits",
+    COUNT(CASE WHEN u."status" = 'OCCUPIED' THEN 1 END)::INT AS "occupiedUnits",
+    COUNT(CASE WHEN u."status" = 'VACANT' THEN 1 END)::INT AS "vacantUnits",
+    CASE 
+        WHEN COUNT(u."id") = 0 THEN 0.00
+        ELSE ROUND((COUNT(CASE WHEN u."status" = 'OCCUPIED' THEN 1 END)::NUMERIC / COUNT(u."id")::NUMERIC) * 100, 2)
+    END AS "occupancyRate"
+FROM "Property" p
+LEFT JOIN "Unit" u ON u."propertyId" = p."id"
+WHERE ($1 = 'LANDLORD' AND p."ownerId" = $2) OR ($1 = 'MANAGER' AND p."managerId" = $2);
+
+-- 8.2 Expected rent this month: sum of monthlyRent for active leases covering the current month
+-- READ
+SELECT 
+    COALESCE(SUM(l."monthlyRent"), 0.00) AS "expectedRentThisMonth"
+FROM "Lease" l
+INNER JOIN "Unit" u ON u."id" = l."unitId"
+INNER JOIN "Property" p ON p."id" = u."propertyId"
+WHERE 
+    (($1 = 'LANDLORD' AND p."ownerId" = $2) OR ($1 = 'MANAGER' AND p."managerId" = $2))
+    AND l."status" = 'ACTIVE'
+    AND l."startDate" <= $3  -- monthEnd
+    AND l."endDate" >= $4;   -- monthStart
+
+-- 8.3 Collected rent this month: sum of payments made in the current month
+-- READ
+SELECT 
+    COALESCE(SUM(pm."amount"), 0.00) AS "rentCollectedThisMonth"
+FROM "Payment" pm
+INNER JOIN "Lease" l ON l."id" = pm."leaseId"
+INNER JOIN "Unit" u ON u."id" = l."unitId"
+INNER JOIN "Property" p ON p."id" = u."propertyId"
+WHERE 
+    (($1 = 'LANDLORD' AND p."ownerId" = $2) OR ($1 = 'MANAGER' AND p."managerId" = $2))
+    AND pm."paidOn" >= $3    -- monthStart
+    AND pm."paidOn" <= $4;   -- monthEnd
+
+-- 8.4 Overdue rent identification: active leases that have passed due date without payment for billing month
+-- READ
+SELECT 
+    l."id" AS "leaseId",
+    l."dueDay",
+    l."monthlyRent" AS "amount",
+    l."startDate",
+    l."endDate",
+    u."unitNumber",
+    p."name" AS "propertyName",
+    tu."name" AS "tenantName",
+    tu."email" AS "tenantEmail"
+FROM "Lease" l
+INNER JOIN "Unit" u ON u."id" = l."unitId"
+INNER JOIN "Property" p ON p."id" = u."propertyId"
+INNER JOIN "TenantProfile" tp ON tp."id" = l."tenantId"
+INNER JOIN "User" tu ON tu."id" = tp."userId"
+WHERE 
+    (($1 = 'LANDLORD' AND p."ownerId" = $2) OR ($1 = 'MANAGER' AND p."managerId" = $2))
+    AND l."status" = 'ACTIVE'
+    AND l."startDate" <= CURRENT_DATE
+    AND NOT EXISTS (
+        SELECT 1 
+        FROM "Payment" pm
+        WHERE pm."leaseId" = l."id" 
+          AND pm."billingMonth" = $3  -- current billing month (1st of month)
+    );
+
+-- 8.5 Count open and in-progress maintenance requests across landlord portfolio
+-- READ
+SELECT COUNT(m."id")::INT AS "openMaintenanceRequests"
+FROM "MaintenanceRequest" m
+INNER JOIN "Unit" u ON u."id" = m."unitId"
+INNER JOIN "Property" p ON p."id" = u."propertyId"
+WHERE 
+    (($1 = 'LANDLORD' AND p."ownerId" = $2) OR ($1 = 'MANAGER' AND p."managerId" = $2))
+    AND m."status" IN ('OPEN', 'IN_PROGRESS');
+
+-- 8.6 Rent collected grouped by billing month (last 6 months trend)
+-- READ
+SELECT 
+    pm."billingMonth",
+    COALESCE(SUM(pm."amount"), 0.00) AS "totalCollected"
+FROM "Payment" pm
+INNER JOIN "Lease" l ON l."id" = pm."leaseId"
+INNER JOIN "Unit" u ON u."id" = l."unitId"
+INNER JOIN "Property" p ON p."id" = u."propertyId"
+WHERE 
+    (($1 = 'LANDLORD' AND p."ownerId" = $2) OR ($1 = 'MANAGER' AND p."managerId" = $2))
+    AND pm."billingMonth" >= $3  -- 6 months ago
+    AND pm."billingMonth" <= $4  -- current month
+GROUP BY pm."billingMonth"
+ORDER BY pm."billingMonth" ASC;
+
+-- 8.7 Recent 5 payments across portfolio with tenant, unit, and property info
+-- READ
+SELECT 
+    pm."id" AS "paymentId",
+    pm."amount",
+    pm."billingMonth",
+    pm."paidOn",
+    pm."method",
+    tu."id" AS "tenantUserId",
+    tu."name" AS "tenantName",
+    tu."email" AS "tenantEmail",
+    p."id" AS "propertyId",
+    p."name" AS "propertyName",
+    u."unitNumber",
+    l."dueDay"
+FROM "Payment" pm
+INNER JOIN "Lease" l ON l."id" = pm."leaseId"
+INNER JOIN "Unit" u ON u."id" = l."unitId"
+INNER JOIN "Property" p ON p."id" = u."propertyId"
+INNER JOIN "TenantProfile" tp ON tp."id" = l."tenantId"
+INNER JOIN "User" tu ON tu."id" = tp."userId"
+WHERE 
+    (($1 = 'LANDLORD' AND p."ownerId" = $2) OR ($1 = 'MANAGER' AND p."managerId" = $2))
+ORDER BY pm."paidOn" DESC, pm."createdAt" DESC
+LIMIT 5;
+
+
+-- ============================================================================
+-- SECTION 9: TENANT DASHBOARD ANALYTICS
+-- ============================================================================
+
+-- 9.1 Tenant active lease, unit, and property summary
+-- READ
+SELECT 
+    l."id" AS "leaseId",
+    l."startDate",
+    l."endDate",
+    l."monthlyRent",
+    l."dueDay",
+    u."id" AS "unitId",
+    u."unitNumber",
+    p."id" AS "propertyId",
+    p."name" AS "propertyName",
+    p."address" AS "propertyAddress",
+    p."city" AS "propertyCity",
+    p."state" AS "propertyState"
+FROM "TenantProfile" tp
+INNER JOIN "Lease" l ON l."tenantId" = tp."id"
+INNER JOIN "Unit" u ON u."id" = l."unitId"
+INNER JOIN "Property" p ON p."id" = u."propertyId"
+WHERE 
+    tp."userId" = $1
+    AND l."status" = 'ACTIVE'
+    AND l."startDate" <= CURRENT_DATE
+    AND l."endDate" >= CURRENT_DATE
+ORDER BY l."startDate" DESC
+LIMIT 1;
+
+-- 9.2 Count open/in-progress maintenance requests for signed-in tenant
+-- READ
+SELECT COUNT(m."id")::INT AS "openMaintenanceRequestCount"
+FROM "MaintenanceRequest" m
+INNER JOIN "TenantProfile" tp ON tp."id" = m."tenantId"
+WHERE 
+    tp."userId" = $1
+    AND m."status" IN ('OPEN', 'IN_PROGRESS');
+
+-- 9.3 Current month payment lookup for active lease
+-- READ
+SELECT 
+    pm."id" AS "paymentId",
+    pm."amount",
+    pm."billingMonth",
+    pm."paidOn",
+    pm."method"
+FROM "Payment" pm
+WHERE pm."leaseId" = $1 AND pm."billingMonth" = $2;
+
+-- 9.4 Most recent payment on tenant lease
+-- READ
+SELECT 
+    pm."id" AS "paymentId",
+    pm."amount",
+    pm."billingMonth",
+    pm."paidOn",
+    pm."method"
+FROM "Payment" pm
+WHERE pm."leaseId" = $1
+ORDER BY pm."paidOn" DESC, pm."createdAt" DESC
+LIMIT 1;
+
+
+-- ============================================================================
+-- SECTION 10: SEED & ENVIRONMENT RESET OPERATIONS
+-- ============================================================================
+
+-- 10.1 Reset/clean development database in referential order
+-- WRITE
+DELETE FROM "MaintenanceRequest";
+DELETE FROM "Payment";
+DELETE FROM "Lease";
+DELETE FROM "TenantProfile";
+DELETE FROM "Unit";
+DELETE FROM "Property";
+DELETE FROM "User";
