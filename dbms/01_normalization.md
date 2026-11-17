@@ -63,6 +63,7 @@ All other tables have a single‑column primary key, so 2NF holds trivially for 
 - In **Unit**, `rent` and `bedrooms` depend on the unit identified by `(propertyId, unitNumber)` (or `id`) and not on `status`.
 - In **Lease**, `monthlyRent`, `securityDeposit`, `dueDay` depend on the lease identified by `id`; they are not derived from `unitId` or `tenantId`.
 - In **Payment**, `amount`, `method`, `paidOn` depend on the payment identified by `(leaseId, billingMonth)`; they are not derived from the lease’s `monthlyRent`.
+- In **TenantProfile**, both `id` and the unique `userId` serve as candidate keys. All other attributes (`createdByLandlordId`, `phone`, etc.) depend directly on either of these keys and there are no transitive dependencies.
 - In **MaintenanceRequest**, `title`, `description`, `priority`, `status` depend on the request’s `id`.
 
 No transitive dependencies are present within any relation.  Where business rules exist (e.g., a unit should have at most one active lease), the schema enforces them via a partial unique index rather than via derived columns, so they do not violate 3NF.
@@ -75,7 +76,7 @@ No transitive dependencies are present within any relation.  Where business rule
 |---------|---------------------------|
 | **Insert anomaly** – creating a `Unit` without a `Property` | `Unit.propertyId` is NOT NULL with a foreign‑key (`ON DELETE RESTRICT`). |
 | **Update anomaly** – changing a tenant’s e‑mail | The e‑mail lives only in `User`; updating `User.email` automatically affects any join that reads the tenant’s email. No copy exists in `TenantProfile`. |
-| **Delete anomaly** – deleting a `Property` that still has dependent rows | `ON DELETE RESTRICT` on `Property.ownerId` and `Property.managerId` prevents orphaned `Unit`, `TenantProfile`, etc.; dependents must be removed first. |
+| **Delete anomaly** – deleting a `Property` that still has dependent rows | `Unit.propertyId` with `ON DELETE RESTRICT` prevents deleting a Property referenced by Units. `Property.ownerId` and `managerId` point to User and do not protect Units or `TenantProfile` from orphaning. |
 | **Duplicate payment rows** | Unique index `(leaseId, billingMonth)` guarantees at most one payment per lease per month. |
 | **Multiple active leases for the same unit** | Partial unique index `one_active_lease_per_unit` (migration `20261116001000_one_active_lease_per_unit`) enforces a single `Lease` with `status = 'ACTIVE'` per `unitId`. |
 
@@ -95,10 +96,11 @@ By normalising the data into these distinct tables we avoid the classic insertio
 
 ## 7. conclusion and source references
 
-The schema cleanly separates authentication (`User`), property hierarchy (`Property`, `Unit`), tenancy (`TenantProfile`, `Lease`), financial records (`Payment`), and service requests (`MaintenanceRequest`).  This design eliminates redundancy, enforces referential integrity, and satisfies 1NF‑3NF while preserving necessary historical data (e.g., lease‑specific rent) without making unwarranted assumptions.
+The schema stores both `Unit.rent` and `Lease.monthlyRent`, but the schema does not define a business relationship between these two fields.
 
 **Sources (examined on the remote `origin/main`):**
 - `backend/prisma/schema.prisma`
 - All migration SQL files under `backend/prisma/migrations/`
 - `backend/README.md`
 - Root `README.md`
+
