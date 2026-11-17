@@ -4,3 +4,13 @@ RentSetu is a rent and property management backend built with Node.js, Express, 
 ## CP1 Deliverables
 
 - **DBMS Normalization**: `dbms/01_normalization.md` – normalization report covering the RentSetu data model (users, properties, units, leases, payments, maintenance). Completed.
+
+## CP2 Deliverables
+
+- **ER Diagram (PNG)**: `dbms/02_er_diagram.png` – visual entity‑relationship diagram of the database schema.
+- **ER Diagram (Mermaid source)**: `dbms/02_er_diagram.md` – the Mermaid markup used to generate the diagram.
+- **PostgreSQL Schema**: `dbms/03_schema.sql` – full `CREATE TABLE` statements, enums, constraints, and indexes matching the Prisma model.
+
+All CP2 artefacts are now committed to the `dbms/` folder.
+
+- **DBMS Normalization**: `dbms/01_normalization.md` – normalization report covering the RentSetu data model (users, properties, units, leases, payments, maintenance). Completed.
